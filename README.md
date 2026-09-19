@@ -1,3 +1,5 @@
+<img src="assets/icon.png" width="96" align="right" alt="">
+
 # 🧹 Hausmeister
 
 **Ein MCP-Server, mit dem ein KI-Assistent (z. B. Claude Code) auf einem Unraid-Server nach

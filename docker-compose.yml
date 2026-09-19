@@ -4,6 +4,8 @@ services:
   hausmeister:
     build: .
     container_name: hausmeister
+    labels:
+      net.unraid.docker.icon: "https://raw.githubusercontent.com/Pffeffi/hausmeister/main/assets/icon.png"
     restart: unless-stopped
     ports:
       # nur an die LAN-IP binden - kein Reverse-Proxy-Eintrag, kein Port-Forward
