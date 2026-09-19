@@ -1,0 +1,29 @@
+# Deploy z. B. ueber Compose.Manager. Werte kommen aus .env neben dieser Datei (Vorlage: .env.example).
+# Nach dem Deploy: Ordner an root uebergeben und .env auf 600 setzen (siehe README, "Absichern").
+services:
+  hausmeister:
+    build: .
+    container_name: hausmeister
+    restart: unless-stopped
+    ports:
+      # nur an die LAN-IP binden - kein Reverse-Proxy-Eintrag, kein Port-Forward
+      - "${UNRAID_IP:?UNRAID_IP in .env setzen}:8765:8765"
+    environment:
+      UNRAID_URL: "${UNRAID_URL:-https://${UNRAID_IP}:443/graphql}"
+      UNRAID_API_KEY: "${UNRAID_API_KEY:?UNRAID_API_KEY in .env setzen}"
+      MCP_TOKEN: "${MCP_TOKEN:?MCP_TOKEN in .env setzen}"
+      MCP_ALLOWED_HOSTS: "${UNRAID_IP}:8765"
+    volumes:
+      - ./config.json:/config/config.json:ro
+      - hausmeister-data:/data   # Audit-Log; benanntes Volume uebernimmt den Besitzer (uid 10001) aus dem Image
+    read_only: true
+    tmpfs:
+      - /tmp
+    cap_drop: [ALL]
+    security_opt:
+      - no-new-privileges:true
+    mem_limit: 256m
+    pids_limit: 100
+
+volumes:
+  hausmeister-data:

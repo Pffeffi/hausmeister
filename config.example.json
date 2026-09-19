@@ -1,0 +1,6 @@
+{
+  "_hinweis": "Nur Container, die der Assistent starten/stoppen/neu starten und deren Logs er lesen darf. Keine Datenbanken, Redis, Nginx-Proxy-Manager, Backup-Container und nicht den Hausmeister selbst.",
+  "whitelist": ["Jellyfin", "Spoolman", "PrintGuard", "jDownloader2"],
+  "cooldown_seconds": 60,
+  "verify_tls": false
+}
