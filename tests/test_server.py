@@ -1,48 +1,38 @@
 """Ende-zu-Ende ueber echtes HTTP: uvicorn im Thread + offizieller MCP-Client."""
-import socket
-import threading
-import time
+import os
+import tempfile
 import unittest
 
 import anyio
 import httpx2
-import uvicorn
 from mcp.client.client import Client
 from mcp.client.streamable_http import create_mcp_http_client, streamable_http_client
 
 from tests.fakes import FakeClient
+from tests.live import LiveServer, free_port
 from manager import Manager
+from settings import SettingsStore
 from server import build_app
 
 TOKEN = "t" * 40
-
-
-def free_port():
-    with socket.socket() as s:
-        s.bind(("127.0.0.1", 0))
-        return s.getsockname()[1]
 
 
 class ServerTest(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         cls.fake = FakeClient()
+        cls.tmp = tempfile.TemporaryDirectory()
+        store = SettingsStore(os.path.join(cls.tmp.name, "settings.json"),
+                              seed={"whitelist": ["Jellyfin", "Spoolman"], "cooldown_seconds": 0})
         cls.port = free_port()
-        app = build_app(Manager(cls.fake, ["Jellyfin", "Spoolman"], cooldown_s=0), TOKEN,
-                        allowed_hosts=["127.0.0.1:%d" % cls.port])
-        cls.server = uvicorn.Server(uvicorn.Config(app, host="127.0.0.1", port=cls.port, log_level="warning"))
-        cls.thread = threading.Thread(target=cls.server.run, daemon=True)
-        cls.thread.start()
-        for _ in range(100):
-            if cls.server.started:
-                break
-            time.sleep(0.05)
-        cls.url = "http://127.0.0.1:%d/mcp" % cls.port
+        app = build_app(Manager(cls.fake, store), TOKEN, allowed_hosts=["127.0.0.1:%d" % cls.port])
+        cls.live = LiveServer(app, port=cls.port).start()
+        cls.url = cls.live.base + "/mcp"
 
     @classmethod
     def tearDownClass(cls):
-        cls.server.should_exit = True
-        cls.thread.join(5)
+        cls.live.stop()
+        cls.tmp.cleanup()
 
     def post(self, headers):
         body = {"jsonrpc": "2.0", "id": 1, "method": "tools/list", "params": {}}
@@ -85,7 +75,7 @@ class ServerTest(unittest.TestCase):
         self.assertFalse(lst.is_error)
         self.assertIn("cms-db", str(lst.content))
         self.assertTrue(denied.is_error)
-        self.assertIn("Whitelist", str(denied.content))
+        self.assertIn("nicht gesteuert werden", str(denied.content))
         self.assertFalse(ok.is_error, ok.content)
         self.assertIn(("start", "srv:Jellyfin"), self.fake.calls)
         self.assertNotIn(("stop", "srv:cms-db"), self.fake.calls)

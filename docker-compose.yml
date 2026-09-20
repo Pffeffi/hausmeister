@@ -9,12 +9,15 @@ services:
     restart: unless-stopped
     ports:
       # nur an die LAN-IP binden - kein Reverse-Proxy-Eintrag, kein Port-Forward
-      - "${UNRAID_IP:?UNRAID_IP in .env setzen}:8765:8765"
+      - "${UNRAID_IP:?UNRAID_IP in .env setzen}:8765:8765"   # MCP (Assistent)
+      - "${UNRAID_IP}:8766:8766"                             # Weboberflaeche (Besitzer)
     environment:
       UNRAID_URL: "${UNRAID_URL:-https://${UNRAID_IP}:443/graphql}"
       UNRAID_API_KEY: "${UNRAID_API_KEY:?UNRAID_API_KEY in .env setzen}"
       MCP_TOKEN: "${MCP_TOKEN:?MCP_TOKEN in .env setzen}"
       MCP_ALLOWED_HOSTS: "${UNRAID_IP}:8765"
+      # Hash aus `python hashpw.py`; leer lassen schaltet die Weboberflaeche ab
+      GUI_PASSWORD_HASH: "${GUI_PASSWORD_HASH:-}"
     volumes:
       - ./config.json:/config/config.json:ro
       - hausmeister-data:/data   # Audit-Log; benanntes Volume uebernimmt den Besitzer (uid 10001) aus dem Image

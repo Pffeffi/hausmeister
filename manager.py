@@ -1,9 +1,12 @@
-"""Hausmeister - Fachlogik hinter den MCP-Tools: Whitelist, Bremse, Audit-Log.
+"""Hausmeister - Fachlogik hinter den MCP-Tools: Rechte, Bremse, Audit-Log.
 
-Hier - nicht im MCP-Layer und nicht in Claude Code - liegt die eigentliche
+Hier - nicht im MCP-Layer und nicht im KI-Client - liegt die eigentliche
 Sicherheitsgrenze. Der Unraid-API-Key haette mit DOCKER:UPDATE_ANY z. B. auch
 updateContainer/updateAllContainers erlaubt; dieser Server bietet davon nur
-start/stop an, und nur fuer Container auf der Whitelist.
+start/stop an, und nur fuer freigegebene Container.
+
+Die Rechte kommen aus dem SettingsStore und werden bei jedem Aufruf frisch
+gelesen. Aenderungen aus der GUI wirken damit sofort, ohne Neustart.
 """
 import json
 import threading
@@ -15,21 +18,18 @@ from mcp.server.mcpserver.exceptions import ToolError as _SdkToolError
 from redact import redact
 from unraid_api import UnraidError
 
-MAX_LOG_LINES = 500
 MAX_LINE_CHARS = 2000
 
 
 class ToolError(_SdkToolError):
-    """Bewusste Ablehnung/Fehler: Text geht an Claude. Alles andere versteckt das SDK."""
+    """Bewusste Ablehnung/Fehler: Text geht an den Client. Alles andere versteckt das SDK."""
 
 
 class Manager:
-    def __init__(self, client, whitelist, audit_path=None, cooldown_s=60, clock=time.monotonic):
+    def __init__(self, client, settings, audit_path=None, clock=time.monotonic):
         self.client = client
-        # Vergleich ohne Gross/Klein, Ausgabe mit dem echten Containernamen.
-        self.whitelist = {n.strip().lower() for n in whitelist if n.strip()}
+        self.settings = settings
         self.audit_path = audit_path
-        self.cooldown_s = cooldown_s
         self.clock = clock
         self._last_write = {}
         self._lock = threading.Lock()        # Cooldown-Tabelle
@@ -44,8 +44,11 @@ class Manager:
                  "action": action, "container": container, "result": result}
         if detail:
             entry["detail"] = detail
-        with self._audit_lock, open(self.audit_path, "a", encoding="utf-8") as f:
-            f.write(json.dumps(entry, ensure_ascii=False) + "\n")
+        try:
+            with self._audit_lock, open(self.audit_path, "a", encoding="utf-8") as f:
+                f.write(json.dumps(entry, ensure_ascii=False) + "\n")
+        except OSError:
+            pass  # Ein volles /data darf keine Aktion blockieren
 
     def _containers(self):
         try:
@@ -53,51 +56,70 @@ class Manager:
         except UnraidError as e:
             raise ToolError(str(e)) from None
 
-    def _find(self, name, action):
-        """Container auf der Whitelist per Name finden, sonst ToolError."""
-        key = (name or "").strip().lstrip("/").lower()
-        if key not in self.whitelist:
-            if action not in ("status", "logs"):
-                self._audit(action, name, "denied", "nicht auf der Whitelist")
-            raise ToolError("'%s' steht nicht auf der Whitelist dieses Servers. "
-                            "Freigegeben: %s" % (name, ", ".join(sorted(self.whitelist)) or "(keine)"))
+    def _flags(self, cfg, name):
+        """Rechte eines Containers; Namensvergleich ohne Gross-/Kleinschreibung."""
+        return (cfg["containers"].get(name)
+                or next((v for k, v in cfg["containers"].items() if k.lower() == name.lower()), None)
+                or {"manage": False, "logs": False})
+
+    def _allowed(self, cfg, key):
+        return ", ".join(sorted(n for n, f in cfg["containers"].items() if f.get(key))) or "(keine)"
+
+    def _find(self, name, action, need):
+        """Container suchen und das noetige Recht pruefen ('logs', 'manage' oder None)."""
+        cfg = self.settings.load()
+        key = (name or "").strip().lstrip("/")
+        flags = self._flags(cfg, key)
+        if need and not flags.get(need):
+            if need == "manage":
+                self._audit(action, key, "denied", "nicht freigegeben")
+            was = "gesteuert werden" if need == "manage" else "gelesen werden"
+            raise ToolError("'%s' darf von diesem Server nicht %s. Freigegeben: %s. "
+                            "Aendern kann das nur der Besitzer in der Hausmeister-Oberflaeche."
+                            % (name, was, self._allowed(cfg, need)))
+        if need is None and not (flags.get("manage") or flags.get("logs")):
+            raise ToolError("'%s' ist auf diesem Server nicht freigegeben." % name)
         for c in self._containers():
-            if c["name"].lower() == key:
-                return c
+            if c["name"].lower() == key.lower():
+                return c, cfg
         raise ToolError("Container '%s' existiert auf dem Server nicht." % name)
 
-    def _check_cooldown(self, container, action):
+    def _check_cooldown(self, container, action, cooldown):
         now = self.clock()
         with self._lock:
             last = self._last_write.get(container)
-            blocked = last is not None and now - last < self.cooldown_s
+            blocked = last is not None and now - last < cooldown
             if not blocked:
                 self._last_write[container] = now
         if blocked:
             self._audit(action, container, "denied", "Cooldown")
             raise ToolError("Fuer '%s' lief gerade erst eine Aenderung. Bitte in %d s erneut."
-                            % (container, int(self.cooldown_s - (now - last)) + 1))
+                            % (container, int(cooldown - (now - last)) + 1))
 
     # --- Lesen --------------------------------------------------------------
 
     def list_containers(self):
+        cfg = self.settings.load()
         out = []
         for c in sorted(self._containers(), key=lambda c: c["name"].lower()):
+            f = self._flags(cfg, c["name"])
             out.append({"name": c["name"], "state": c["state"], "status": c["status"],
-                        "image": c["image"], "manageable": c["name"].lower() in self.whitelist})
+                        "image": c["image"],
+                        "manageable": bool(f.get("manage")) and not cfg["read_only"],
+                        "logsReadable": bool(f.get("logs"))})
         return out
 
     def status(self, name):
-        c = self._find(name, "status")
+        c, _ = self._find(name, "status", None)
         return {k: c[k] for k in ("name", "state", "status", "image", "autoStart", "updateAvailable")}
 
     def logs(self, name, lines=200):
+        c, cfg = self._find(name, "logs", "logs")
         try:
             lines = int(lines)
         except (TypeError, ValueError):
             lines = 200
-        lines = max(1, min(lines, MAX_LOG_LINES))
-        c = self._find(name, "logs")
+        lines = max(1, min(lines, cfg["max_log_lines"]))
         try:
             raw = self.client.logs(c["id"], lines)
         except UnraidError as e:
@@ -141,16 +163,20 @@ class Manager:
             "temperatures": sensors,
         }
 
-    # --- Schreiben (nur Whitelist, mit Bremse und Audit) ---------------------
+    # --- Schreiben (nur freigegeben, mit Bremse und Audit) -------------------
 
     def _write(self, action, name):
-        c = self._find(name, action)
+        c, cfg = self._find(name, action, "manage")
+        if cfg["read_only"]:
+            self._audit(action, c["name"], "denied", "Not-Aus")
+            raise ToolError("Der Not-Aus ist aktiv: Dieser Server fuehrt derzeit keine Aenderungen "
+                            "aus. Nur der Besitzer kann ihn in der Oberflaeche wieder loesen.")
         noop = {"start": "lief bereits" if c["state"] == "RUNNING" else None,
                 "stop": "war nicht gestartet" if c["state"] != "RUNNING" else None}.get(action)
         if noop:
             self._audit(action, c["name"], "noop", noop)
             return {"name": c["name"], "result": noop, "state": c["state"]}
-        self._check_cooldown(c["name"], action)
+        self._check_cooldown(c["name"], action, cfg["cooldown_seconds"])
         try:
             if action == "start":
                 r = self.client.start(c["id"])

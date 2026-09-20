@@ -15,22 +15,39 @@ freigegebene Container starten, stoppen oder neu starten. Ohne SSH, ohne Root un
 Docker-Socket.
 
 ```
-KI-Client (PC) ──HTTP + Bearer-Token (nur LAN)──▶ Hausmeister (Container auf Unraid)
-                                                     └─▶ Unraid GraphQL-API (eigener, eingeschränkter Key)
+KI-Client  ──HTTP + Bearer-Token (Port 8765)──▶ Hausmeister ──▶ Unraid GraphQL-API
+Besitzer   ──Browser + Passwort (Port 8766)──▶ Weboberfläche: wer darf was, Not-Aus, Hausbuch
 ```
 
 ## Was er darf
 
 | Tool | Art | Einschränkung |
 |---|---|---|
-| `container_list` | lesen | alle Container; `manageable` = auf der Whitelist |
-| `container_status(name)` | lesen | nur Whitelist |
-| `container_logs(name, lines)` | lesen | nur Whitelist, max. 500 Zeilen, Secrets serverseitig geschwärzt |
+| `container_list` | lesen | alle Container; `manageable` / `logsReadable` = was erlaubt ist |
+| `container_status(name)` | lesen | nur freigegebene |
+| `container_logs(name, lines)` | lesen | eigenes Recht je Container, Zeilenlimit, Secrets serverseitig geschwärzt |
 | `server_metrics` | lesen | CPU, RAM, Temperaturen, Array-Zustand, Plattenfehler |
-| `container_start/stop/restart(name)` | schreiben | nur Whitelist, 60 s Sperre pro Container, Audit-Log |
+| `container_start/stop/restart(name)` | schreiben | nur freigegebene, Sperrzeit pro Container, Audit-Log |
 
 Was er bewusst **nicht** kann: Shell, `exec`, Container anlegen, löschen oder aktualisieren,
 Array, Shares oder Plugins verwalten.
+
+## Weboberfläche (Port 8766)
+
+Die Rechte ändert der Besitzer im Browser, nicht der Assistent:
+
+- **Container:** je Container getrennt „Steuern“ (start/stop/restart) und „Logs“
+- **Not-Aus:** ein Schalter sperrt sofort alle Schreibaktionen, unabhängig von den Haken
+- **Sperrzeit und Zeilenlimit** einstellbar
+- **Hausbuch:** alle Aktionen inklusive abgelehnter Versuche
+
+Änderungen wirken sofort, ohne Neustart (`/data/settings.json`, wird bei Änderung neu gelesen).
+
+**Getrennt vom Assistenten:** eigener Port, eigene Anmeldung mit Passwort (scrypt-Hash in
+`GUI_PASSWORD_HASH`), Sitzung als signiertes Cookie (SameSite=Strict), CSRF-Header- und
+Origin-Prüfung, fünf Fehlversuche je IP pro fünf Minuten. **Das MCP-Token gilt hier nicht**, und
+die Sitzung der Oberfläche öffnet umgekehrt nicht den MCP-Port. Sonst könnte sich der Assistent
+selbst mehr Rechte geben. Das Passwort gehört deshalb nicht auf den Rechner des Assistenten.
 
 ## Warum die Grenze hier liegt und nicht beim API-Key
 
@@ -56,11 +73,15 @@ Weitere Schutzmaßnahmen:
    unraid-api apikey --create --name "Hausmeister" --roles "" \
      --permissions "DOCKER:READ_ANY,DOCKER:UPDATE_ANY,INFO:READ_ANY,ARRAY:READ_ANY" --json
    ```
-2. Projekt auf den Server kopieren. Daneben aus den Vorlagen anlegen:
-   - `.env` (aus `.env.example`: IP, Key, Token)
-   - `config.json` (aus `config.example.json`: **Whitelist**)
-3. Stack starten, z. B. in Compose.Manager mit **Compose Up** oder `docker compose up -d --build`.
-4. Prüfen: `curl -X POST http://<unraid-ip>:8765/mcp` muss **401** liefern.
+2. Passwort für die Oberfläche festlegen: `python hashpw.py` und die ausgegebene Zeile
+   in die `.env` übernehmen. Ohne `GUI_PASSWORD_HASH` startet nur der MCP-Teil.
+3. Projekt auf den Server kopieren. Daneben aus den Vorlagen anlegen:
+   - `.env` (aus `.env.example`: IP, Key, Token, Passwort-Hash)
+   - `config.json` (aus `config.example.json`: Startwerte der Freigaben; danach zählt
+     `/data/settings.json` aus der Oberfläche)
+4. Stack starten, z. B. in Compose.Manager mit **Compose Up** oder `docker compose up -d --build`.
+5. Prüfen: `curl -X POST http://<unraid-ip>:8765/mcp` muss **401** liefern.
+   Oberfläche: `http://<unraid-ip>:8766` im Browser.
 
 ### Absichern (wichtig)
 Wenn der Client-Rechner den Deploy-Ordner per SMB erreicht (z. B. ein Share), könnte der Assistent
@@ -102,8 +123,9 @@ Eine JSON-Zeile pro Schreibaktion, inklusive abgelehnter Versuche (`denied`) und
 python -m venv .venv && .venv/bin/pip install -r requirements.txt   # Windows: .venv\Scripts\...
 python -m unittest discover -s tests -t .
 ```
-`tests/test_server.py` testet über echtes HTTP mit dem offiziellen MCP-Client: 401 ohne Token,
-Host-Header-Prüfung, genau die erlaubten Tools, Ablehnung außerhalb der Whitelist.
+`tests/test_server.py` testet über echtes HTTP mit dem offiziellen MCP-Client (401 ohne Token,
+Host-Header-Prüfung, genau die erlaubten Tools), `tests/test_gui.py` die Oberfläche inklusive der
+Trennung beider Zugänge: MCP-Token öffnet die GUI nicht, GUI-Sitzung öffnet den MCP-Port nicht.
 Gebaut auf `mcp` 2.x (`MCPServer`), getestet gegen Unraid 7.3.2 / API 4.35.1.
 
 ## Lizenz
