@@ -11,36 +11,21 @@ import base64
 import hashlib
 import hmac
 import json
-import os
 import secrets
 import time
 
 from starlette.applications import Starlette
-from starlette.responses import HTMLResponse, JSONResponse, Response
+from starlette.responses import HTMLResponse, JSONResponse
 from starlette.routing import Route
+
+# Das Hashen liegt in hashpw.py, damit `python3 hashpw.py` auch ohne
+# installierte Pakete direkt auf dem Unraid-Server laeuft.
+from hashpw import check_password, hash_password  # noqa: F401  (Re-Export fuer Tests)
 
 COOKIE = "hausmeister_session"
 SESSION_SECONDS = 8 * 3600
 MAX_TRIES = 5              # Fehlversuche je IP
 TRY_WINDOW = 300           # in diesem Zeitfenster (Sekunden)
-SCRYPT = dict(n=2 ** 14, r=8, p=1, dklen=32)
-
-
-def hash_password(password, salt=None):
-    salt = salt or secrets.token_bytes(16)
-    dk = hashlib.scrypt(password.encode("utf-8"), salt=salt, **SCRYPT)
-    return "scrypt$%s$%s" % (salt.hex(), dk.hex())
-
-
-def check_password(password, stored):
-    try:
-        algo, salt_hex, want = (stored or "").split("$")
-        if algo != "scrypt":
-            return False
-        dk = hashlib.scrypt(password.encode("utf-8"), salt=bytes.fromhex(salt_hex), **SCRYPT)
-    except (ValueError, TypeError):
-        return False
-    return hmac.compare_digest(dk.hex(), want)
 
 
 class Sessions:
