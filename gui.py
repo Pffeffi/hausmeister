@@ -285,17 +285,34 @@ PAGE = """<!doctype html>
   .sw:has(input:checked){color:var(--fg); font-weight:600}
 
   /* --- Containerliste ---------------------------------------------------- */
-  .item{display:flex; gap:14px; align-items:center; flex-wrap:wrap; padding:12px 10px; border-radius:11px;
-        border:1px solid transparent; transition:.15s}
+  .chips{display:flex; gap:6px; flex-wrap:wrap}
+  .chip{font:inherit; font-size:13px; font-weight:600; padding:5px 12px; border-radius:999px;
+        border:1px solid var(--line); background:transparent; color:var(--muted); cursor:pointer}
+  .chip:hover{color:var(--fg)}
+  .chip.on{background:color-mix(in srgb, var(--accent) 14%, transparent); color:var(--accent);
+           border-color:color-mix(in srgb, var(--accent) 40%, var(--line))}
+  .group{margin:20px 0 6px; display:flex; align-items:center; gap:10px; font-size:11.5px; font-weight:700;
+         letter-spacing:.07em; text-transform:uppercase; color:var(--muted)}
+  .group::after{content:""; flex:1; height:1px; background:var(--line)}
+  .group:first-child{margin-top:6px}
+  .item{display:grid; grid-template-columns:auto minmax(0,1fr) auto; gap:12px; align-items:center;
+        padding:10px 12px; border-radius:11px; border:1px solid transparent; transition:.15s}
   .item:hover{background:var(--line2); border-color:var(--line)}
-  .item + .item{margin-top:2px}
-  .dot{width:9px; height:9px; border-radius:50%; background:var(--muted); flex:none; box-shadow:0 0 0 4px color-mix(in srgb, var(--muted) 15%, transparent)}
+  .item.free{background:color-mix(in srgb, var(--accent) 6%, transparent)}
+  .dot{width:9px; height:9px; border-radius:50%; background:var(--muted); flex:none;
+       box-shadow:0 0 0 4px color-mix(in srgb, var(--muted) 15%, transparent)}
   .dot.RUNNING{background:var(--ok); box-shadow:0 0 0 4px color-mix(in srgb, var(--ok) 18%, transparent)}
   .dot.FEHLT{background:var(--warn); box-shadow:0 0 0 4px color-mix(in srgb, var(--warn) 18%, transparent)}
-  .nm{flex:1 1 210px; min-width:0}
-  .nm b{font-weight:640; overflow-wrap:anywhere}
-  .nm .meta{color:var(--muted); font-size:12.5px; overflow-wrap:anywhere}
-  .flags{display:flex; gap:18px; margin-left:auto}
+  .nm{min-width:0}
+  .nm b{font-weight:640; display:block; white-space:nowrap; overflow:hidden; text-overflow:ellipsis}
+  .nm .meta{display:flex; gap:9px; align-items:baseline; color:var(--muted); font-size:12.5px; min-width:0}
+  .nm .meta .img{white-space:nowrap; overflow:hidden; text-overflow:ellipsis; opacity:.75}
+  .age{white-space:nowrap; flex:none}
+  .flags{display:flex; gap:16px; justify-self:end}
+  @media (max-width:620px){
+    .item{grid-template-columns:auto minmax(0,1fr)}
+    .flags{grid-column:2; justify-self:start; margin-top:2px}
+  }
 
   /* --- Hausbuch ---------------------------------------------------------- */
   .log{display:grid; gap:2px}
@@ -322,7 +339,7 @@ PAGE = """<!doctype html>
           background:linear-gradient(135deg, var(--warn), #ef6a4f)}
   .hide{display:none !important}
   svg.hide{position:absolute; width:0; height:0; display:block !important; overflow:hidden}
-  @media (max-width:560px){ .entry .t{width:auto} .flags{margin-left:0; width:100%} }
+  @media (max-width:560px){ .entry .t{width:auto} }
 </style></head><body>
 
 <svg class="hide" aria-hidden="true">
@@ -381,10 +398,16 @@ PAGE = """<!doctype html>
 
 <main id="app" class="hide">
   <div class="card">
-    <div class="row" style="margin-bottom:10px">
-      <div><h2 style="margin:0">Container</h2></div>
+    <div class="row" style="margin-bottom:12px">
+      <h2 style="margin:0">Container</h2>
       <span class="grow"></span>
-      <input type="search" id="filter" placeholder="Filtern …" style="width:180px">
+      <input type="search" id="filter" placeholder="Filtern …" style="width:160px">
+    </div>
+    <div class="chips" style="margin-bottom:8px">
+      <button class="chip on" data-f="alle">Alle</button>
+      <button class="chip" data-f="frei">Freigegeben</button>
+      <button class="chip" data-f="laeuft">Läuft</button>
+      <button class="chip" data-f="aus">Gestoppt</button>
     </div>
     <p class="sub"><b>Steuern</b> erlaubt Start, Stopp und Neustart. <b>Logs</b> erlaubt das Lesen der
       Logzeilen — Geheimnisse werden dabei immer geschwärzt.</p>
@@ -432,7 +455,7 @@ const api = (url, opts={}) => fetch(url, {credentials:'same-origin',
   headers:{'X-Hausmeister':'1','Content-Type':'application/json'}, ...opts});
 const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 const local = ts => { const d = new Date(ts); return isNaN(d) ? ts : d.toLocaleString('de-DE'); };
-let cfg = null, dirty = false;
+let cfg = null, dirty = false, letzteListe = [];
 const markDirty = () => { dirty = true; $('#save').disabled = false; };
 
 async function boot(){
@@ -493,19 +516,47 @@ async function load(){
   $('#notaus').classList.toggle('hide', !cfg.read_only);
   $('#pillNotaus').classList.toggle('hide', !cfg.read_only);
 
+  letzteListe = d.containers;
+  render();
+}
+
+// "Up 5 days (healthy)" -> "seit 5 d", "Exited (0) 3 weeks ago" -> "vor 3 Wo."
+function kurz(status){
+  const e = {second:'s', seconds:'s', minute:'min', minutes:'min', hour:'h', hours:'h', day:'d', days:'d',
+             week:'Wo.', weeks:'Wo.', month:'Mon.', months:'Mon.', year:'J', years:'J'};
+  const st = status || '';
+  let m = /^Up (\d+) (\w+)/.exec(st);
+  if (m) return 'seit ' + m[1] + ' ' + (e[m[2]] || m[2]);
+  if (/^Up Less/.test(st)) return 'gerade eben';
+  m = /(\d+) (\w+) ago/.exec(st);
+  if (m) return 'vor ' + m[1] + ' ' + (e[m[2]] || m[2]);
+  return st;
+}
+
+// Nur Name:Tag zeigen, sha256-Ruempfe abkuerzen
+function kurzImage(img){
+  const v = String(img || '');
+  if (v.startsWith('sha256:')) return 'sha256:' + v.slice(7, 19) + '…';
+  const teile = v.split('/');
+  return teile.length > 2 ? '…/' + teile[teile.length - 1] : v;
+}
+
+const istFrei = name => { const f = cfg.containers[name]; return !!(f && (f.manage || f.logs)); };
+
+function render(){
   const tb = $('#containers'); tb.innerHTML = '';
-  for (const c of d.containers){
-    const f = cfg.containers[c.name] || {manage:false, logs:false};
-    const row = document.createElement('div');
-    row.className = 'item'; row.dataset.name = c.name.toLowerCase();
-    row.innerHTML = `<span class="dot ${esc(c.state)}" title="${esc(c.state)}"></span>
-      <div class="nm"><b>${esc(c.name)}</b>
-        <div class="meta">${esc(c.status)} · <span class="mono">${esc(c.image)}</span></div></div>
-      <div class="flags">
-        <label class="sw"><input type="checkbox" data-n="${esc(c.name)}" data-k="manage" ${f.manage?'checked':''}> Steuern</label>
-        <label class="sw"><input type="checkbox" data-n="${esc(c.name)}" data-k="logs" ${f.logs?'checked':''}> Logs</label>
-      </div>`;
-    tb.appendChild(row);
+  const gruppen = [
+    ['Freigegeben', letzteListe.filter(c => istFrei(c.name))],
+    ['Läuft', letzteListe.filter(c => !istFrei(c.name) && c.state === 'RUNNING')],
+    ['Gestoppt', letzteListe.filter(c => !istFrei(c.name) && c.state !== 'RUNNING')],
+  ];
+  for (const [titel, liste] of gruppen){
+    if (!liste.length) continue;
+    const h = document.createElement('div');
+    h.className = 'group';
+    h.innerHTML = '<span>' + titel + ' · ' + liste.length + '</span>';
+    tb.appendChild(h);
+    for (const c of liste) tb.appendChild(zeile(c));
   }
   tb.querySelectorAll('input').forEach(el => el.addEventListener('change', () => {
     const n = el.dataset.n, k = el.dataset.k;
@@ -513,15 +564,54 @@ async function load(){
     cfg.containers[n][k] = el.checked;
     if (!cfg.containers[n].manage && !cfg.containers[n].logs) delete cfg.containers[n];
     markDirty();
+    render();
   }));
   applyFilter();
 }
 
+function zeile(c){
+  const f = cfg.containers[c.name] || {manage:false, logs:false};
+  const row = document.createElement('div');
+  row.className = 'item' + (istFrei(c.name) ? ' free' : '');
+  row.dataset.name = c.name.toLowerCase();
+  row.dataset.state = c.state;
+  row.dataset.frei = istFrei(c.name) ? '1' : '0';
+  row.innerHTML = `<span class="dot ${esc(c.state)}" title="${esc(c.state)}"></span>
+    <div class="nm"><b title="${esc(c.name)}">${esc(c.name)}</b>
+      <div class="meta"><span class="age">${esc(kurz(c.status))}</span>
+        <span class="img mono" title="${esc(c.image)}">${esc(kurzImage(c.image))}</span></div></div>
+    <div class="flags">
+      <label class="sw"><input type="checkbox" data-n="${esc(c.name)}" data-k="manage" ${f.manage?'checked':''}> Steuern</label>
+      <label class="sw"><input type="checkbox" data-n="${esc(c.name)}" data-k="logs" ${f.logs?'checked':''}> Logs</label>
+    </div>`;
+  return row;
+}
+
+document.querySelectorAll('.chip').forEach(ch => ch.addEventListener('click', () => {
+  document.querySelectorAll('.chip').forEach(x => x.classList.toggle('on', x === ch));
+  applyFilter();
+}));
+
 $('#filter').addEventListener('input', applyFilter);
 function applyFilter(){
   const q = $('#filter').value.trim().toLowerCase();
-  document.querySelectorAll('#containers .item').forEach(el =>
-    el.classList.toggle('hide', !!q && !el.dataset.name.includes(q)));
+  const chip = document.querySelector('.chip.on');
+  const modus = chip ? chip.dataset.f : 'alle';
+  document.querySelectorAll('#containers .item').forEach(el => {
+    const text = !q || el.dataset.name.includes(q);
+    const art = modus === 'alle'
+      || (modus === 'frei' && el.dataset.frei === '1')
+      || (modus === 'laeuft' && el.dataset.state === 'RUNNING')
+      || (modus === 'aus' && el.dataset.state !== 'RUNNING');
+    el.classList.toggle('hide', !(text && art));
+  });
+  // Ueberschriften ohne sichtbare Zeilen ausblenden
+  document.querySelectorAll('#containers .group').forEach(h => {
+    let sichtbar = 0;
+    for (let el = h.nextElementSibling; el && el.classList.contains('item'); el = el.nextElementSibling)
+      if (!el.classList.contains('hide')) sichtbar++;
+    h.classList.toggle('hide', sichtbar === 0);
+  });
 }
 
 for (const [id, key, num] of [['#readonly','read_only',false], ['#cooldown','cooldown_seconds',true], ['#maxlines','max_log_lines',true]])

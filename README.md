@@ -19,6 +19,23 @@ KI-Client  ──HTTP + Bearer-Token (Port 8765)──▶ Hausmeister ──▶ 
 Besitzer   ──Browser + Passwort (Port 8766)──▶ Weboberfläche: wer darf was, Not-Aus, Hausbuch
 ```
 
+## So sieht das aus
+
+Freigaben je Container, gruppiert nach „freigegeben / läuft / gestoppt“:
+
+![Containerliste](docs/container.png)
+
+Regeln, Passwortwechsel und das Hausbuch mit jeder Aktion und jeder Ablehnung:
+
+![Regeln und Hausbuch](docs/regeln-hausbuch.png)
+
+Beim ersten Aufruf setzt der Besitzer das Passwort, mit dem Code aus dem Container-Log:
+
+![Erste Einrichtung](docs/einrichtung.png)
+
+<sub>Heller Modus: <a href="docs/container-hell.png">docs/container-hell.png</a>. Die Container in
+den Bildern sind erfunden.</sub>
+
 ## Was er darf
 
 | Tool | Art | Einschränkung |
