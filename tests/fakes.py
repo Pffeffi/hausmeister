@@ -13,6 +13,7 @@ class FakeClient:
         self.calls = []
         self.state = {"Jellyfin": "RUNNING", "Spoolman": "EXITED", "cms-db": "RUNNING"}
         self.fail_start = False
+        self.empty_logs = set()      # Container, die ueber die API leer wirken (stderr-Logger)
 
     def containers(self):
         return [{"id": "srv:" + n, "name": n, "image": n.lower() + ":latest", "state": s,
@@ -21,6 +22,8 @@ class FakeClient:
 
     def logs(self, cid, tail):
         self.calls.append(("logs", cid, tail))
+        if cid.split(":", 1)[-1] in self.empty_logs:
+            return []
         return [{"timestamp": "2026-09-19T10:00:00Z", "message": "line %d password=hunter2" % i}
                 for i in range(tail + 50)]
 

@@ -19,9 +19,16 @@ services:
       # Optional: Passwort fest vorgeben. Leer lassen -> Einrichtung beim ersten
       # Aufruf mit dem Code aus dem Container-Log.
       GUI_PASSWORD_HASH: "${GUI_PASSWORD_HASH:-}"
+      # Nur sinnvoll zusammen mit dem Mount weiter unten: Reserve-Logquelle fuer
+      # Container, die nach stderr loggen. Beides weglassen = wie bisher.
+      DOCKER_LOG_DIR: "/var/lib/docker/containers"
     volumes:
       - ./config.json:/config/config.json:ro
-      - hausmeister-data:/data   # Audit-Log; benanntes Volume uebernimmt den Besitzer (uid 10001) aus dem Image
+      # Hausbuch; benanntes Volume uebernimmt den Besitzer (uid 10001) aus dem Image
+      - hausmeister-data:/data
+      # Optional und nur lesend: Docker-Logdateien als Reserve (stdout + stderr).
+      # Diese Zeile und DOCKER_LOG_DIR gehoeren zusammen - beides weglassen = wie bisher.
+      - /var/lib/docker/containers:/var/lib/docker/containers:ro
     read_only: true
     tmpfs:
       - /tmp

@@ -26,10 +26,11 @@ class ToolError(_SdkToolError):
 
 
 class Manager:
-    def __init__(self, client, settings, audit_path=None, clock=time.monotonic):
+    def __init__(self, client, settings, audit_path=None, clock=time.monotonic, log_files=None):
         self.client = client
         self.settings = settings
         self.audit_path = audit_path
+        self.log_files = log_files   # Reserve-Logquelle, siehe docker_logs.py
         self.clock = clock
         self._last_write = {}
         self._lock = threading.Lock()        # Cooldown-Tabelle
@@ -124,15 +125,29 @@ class Manager:
             raw = self.client.logs(c["id"], lines)
         except UnraidError as e:
             raise ToolError(str(e)) from None
+        quelle = "Unraid-API (nur stdout)"
+        if not raw and self.log_files and self.log_files.available():
+            # Die API ruft `docker logs` auf und liest nur stdout. Container, die
+            # nach stderr schreiben, sehen dort leer aus - dann die Datei lesen.
+            raw = self.log_files.tail(c["id"], lines)
+            quelle = "Docker-Logdatei (stdout + stderr)"
         out = []
         for ln in raw[-lines:]:
             msg = (ln.get("message") or "").rstrip()
             if len(msg) > MAX_LINE_CHARS:
                 msg = msg[:MAX_LINE_CHARS] + " ...[gekuerzt]"
-            out.append("%s %s" % (ln.get("timestamp", ""), redact(msg)))
-        return {"name": c["name"], "lines": len(out), "log": "\n".join(out),
-                "note": "Geheimnisse wurden serverseitig geschwaerzt." if out else
-                        "Keine Logzeilen geliefert (leeres Log oder anderer Log-Treiber)."}
+            mark = "!" if ln.get("stream") == "stderr" else " "
+            out.append("%s%s %s" % (ln.get("timestamp", ""), mark, redact(msg)))
+        if out:
+            note = "Quelle: %s. Geheimnisse wurden serverseitig geschwaerzt." % quelle
+            if quelle.startswith("Docker"):
+                note += " Zeilen mit '!' stammen aus stderr."
+        elif self.log_files and self.log_files.available():
+            note = "Keine Logzeilen - weder ueber die API noch in der Docker-Logdatei."
+        else:
+            note = ("Keine Logzeilen ueber die API. Das heisst nicht, dass der Container still ist: "
+                    "die Unraid-API liest nur stdout, viele Programme loggen nach stderr.")
+        return {"name": c["name"], "lines": len(out), "log": "\n".join(out), "note": note}
 
     def metrics(self):
         try:

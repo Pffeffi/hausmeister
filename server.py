@@ -11,6 +11,9 @@ Konfiguration ueber Umgebungsvariablen (Secrets) plus config.json (Startwerte):
                       Variable setzt der Besitzer das Passwort beim ersten Aufruf der
                       Oberflaeche - mit dem Einrichtungscode, der beim Start im Log steht.
   GUI_AUTH_FILE       Default /data/auth.json
+  DOCKER_LOG_DIR      optional: /var/lib/docker/containers (read-only eingebunden). Dann
+                      liest der Server stderr-Logs aus der Docker-Logdatei, wenn die
+                      Unraid-API (nur stdout) nichts liefert.
   GUI_DISABLED        auf 1 setzen, wenn die Oberflaeche ganz aus bleiben soll
   MCP_ALLOWED_HOSTS   z. B. <unraid-ip>:8765 (Host-Header-Pruefung), optional
   MCP_CONFIG          Startwerte, Default /config/config.json
@@ -31,6 +34,7 @@ from mcp.server.transport_security import TransportSecuritySettings
 from mcp.types import ToolAnnotations
 
 from auth import Credentials
+from docker_logs import DockerLogFiles
 from gui import build_gui
 from manager import Manager
 from settings import SettingsStore
@@ -169,7 +173,12 @@ def main():
     client = UnraidClient(env["UNRAID_URL"], env["UNRAID_API_KEY"],
                           verify_tls=seed.get("verify_tls", False), ca_file=seed.get("ca_file"))
     audit_path = env.get("MCP_AUDIT_LOG", "/data/audit.log")
-    manager = Manager(client, store, audit_path=audit_path)
+    log_dir = env.get("DOCKER_LOG_DIR", "").strip()
+    log_files = DockerLogFiles(log_dir) if log_dir else None
+    if log_files and not log_files.available():
+        print("DOCKER_LOG_DIR=%s ist nicht lesbar - Reserve-Logquelle bleibt aus." % log_dir, flush=True)
+        log_files = None
+    manager = Manager(client, store, audit_path=audit_path, log_files=log_files)
     hosts = [h.strip() for h in env.get("MCP_ALLOWED_HOSTS", "").split(",") if h.strip()]
 
     apps = [(build_app(manager, env["MCP_TOKEN"], hosts), int(env.get("MCP_PORT", "8765")))]

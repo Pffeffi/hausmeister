@@ -77,6 +77,38 @@ class ManagerTest(unittest.TestCase):
         self.assertEqual(self.m.status("JELLYFIN")["name"], "Jellyfin")
         self.assertEqual(self.m.status("/jellyfin")["name"], "Jellyfin")
 
+    def test_falls_back_to_docker_log_file_when_api_is_empty(self):
+        """Container, die nach stderr loggen, sehen ueber die API leer aus."""
+        class FakeFiles:
+            def __init__(self): self.calls = []
+            def available(self): return True
+            def tail(self, cid, lines):
+                self.calls.append((cid, lines))
+                return [{"timestamp": "t1", "message": "aus stderr", "stream": "stderr"},
+                        {"timestamp": "t2", "message": "aus stdout", "stream": "stdout"}]
+        files = FakeFiles()
+        m = Manager(self.client, self.store, audit_path=self.audit, log_files=files)
+        self.client.empty_logs.add("Jellyfin")
+        out = m.logs("Jellyfin", 10)
+        self.assertEqual(files.calls, [("srv:Jellyfin", 10)])
+        self.assertEqual(out["lines"], 2)
+        self.assertIn("Docker-Logdatei", out["note"])
+        self.assertIn("t1! aus stderr", out["log"])
+        self.assertIn("t2  aus stdout", out["log"])
+
+    def test_no_fallback_when_the_api_delivers(self):
+        class FakeFiles:
+            def available(self): return True
+            def tail(self, cid, lines): raise AssertionError("darf nicht aufgerufen werden")
+        m = Manager(self.client, self.store, audit_path=self.audit, log_files=FakeFiles())
+        self.assertIn("Unraid-API", m.logs("Jellyfin", 3)["note"])
+
+    def test_empty_logs_explain_the_stdout_limitation(self):
+        self.client.empty_logs.add("Jellyfin")
+        out = self.m.logs("Jellyfin", 5)
+        self.assertEqual(out["lines"], 0)
+        self.assertIn("stderr", out["note"])
+
     def test_logs_clamped_and_redacted(self):
         self.set(max_log_lines=50)
         out = self.m.logs("Jellyfin", 10000)

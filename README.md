@@ -118,6 +118,24 @@ Rückfrage vor jeder Änderung, in `~/.claude/settings.json`:
 }
 ```
 
+## Logs: die stdout-Falle
+
+Die Unraid-API ruft `docker logs` auf und liest davon **nur stdout** (geprüft in
+`docker-log.service.ts`, auch im aktuellen Upstream). Container, die nach **stderr** schreiben —
+bei Python die Voreinstellung von `logging` — sehen darüber leer aus, obwohl ihr Log voll ist.
+
+Zwei Wege:
+1. **In der eigenen Anwendung auf stdout loggen**, z. B. `logging.basicConfig(..., stream=sys.stdout)`.
+   Das ist ohnehin die saubere Variante für Container.
+2. **Reserve-Logquelle einschalten** (`DOCKER_LOG_DIR` + der `:ro`-Mount in der
+   `docker-compose.yml`). Dann liest der Hausmeister `/var/lib/docker/containers/<id>/<id>-json.log`,
+   sobald die API nichts liefert — dort stehen **beide** Ströme; Zeilen aus stderr sind mit `!`
+   markiert. Ohne Mount ändert sich nichts.
+
+   Abwägung: Der Prozess kann damit die Rohlogs **aller** Container lesen, gefiltert wird nur noch
+   im Code (`docker_logs.py`: ausschließlich `<64-hex-id>/<id>-json.log`, nur letzte Bytes, keine
+   anderen Dateien). Kein Socket, kein Schreibrecht. Wer das nicht will, lässt Mount und Variable weg.
+
 ## Netz
 Der Port ist nur an die LAN-IP gebunden. **Keinen** Reverse-Proxy-Eintrag, keine
 Cloudflare-Route und kein Port-Forward anlegen. Für unterwegs gehört er ins VPN (Tailscale,
@@ -137,8 +155,9 @@ python -m unittest discover -s tests -t .
 `tests/test_server.py` testet über echtes HTTP mit dem offiziellen MCP-Client (401 ohne Token,
 Host-Header-Prüfung, genau die erlaubten Tools), `tests/test_gui.py` die Oberfläche inklusive der
 Trennung beider Zugänge: MCP-Token öffnet die GUI nicht, GUI-Sitzung öffnet den MCP-Port nicht.
-`tests/test_auth.py` deckt die Einrichtung ab: falscher Code, abgelaufenes Fenster, kein zweites
-Setup, Passwortwechsel.
+`tests/test_auth.py` deckt die Einrichtung ab (falscher Code, abgelaufenes Fenster, kein zweites
+Setup, Passwortwechsel), `tests/test_docker_logs.py` die Reserve-Logquelle inklusive
+Pfad-Ausbruchsversuchen.
 Gebaut auf `mcp` 2.x (`MCPServer`), getestet gegen Unraid 7.3.2 / API 4.35.1.
 
 ## Lizenz
