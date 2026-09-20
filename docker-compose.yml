@@ -16,7 +16,8 @@ services:
       UNRAID_API_KEY: "${UNRAID_API_KEY:?UNRAID_API_KEY in .env setzen}"
       MCP_TOKEN: "${MCP_TOKEN:?MCP_TOKEN in .env setzen}"
       MCP_ALLOWED_HOSTS: "${UNRAID_IP}:8765"
-      # Hash aus `python hashpw.py`; leer lassen schaltet die Weboberflaeche ab
+      # Optional: Passwort fest vorgeben. Leer lassen -> Einrichtung beim ersten
+      # Aufruf mit dem Code aus dem Container-Log.
       GUI_PASSWORD_HASH: "${GUI_PASSWORD_HASH:-}"
     volumes:
       - ./config.json:/config/config.json:ro

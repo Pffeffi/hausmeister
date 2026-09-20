@@ -69,7 +69,7 @@ def read_audit(path, limit=200):
     return out
 
 
-def build_gui(manager, settings, password_hash, audit_path=None, sessions=None):
+def build_gui(manager, settings, credentials, audit_path=None, sessions=None):
     sessions = sessions or Sessions()
     tries = {}
 
@@ -103,7 +103,7 @@ def build_gui(manager, settings, password_hash, audit_path=None, sessions=None):
             body = await request.json()
         except Exception:
             body = {}
-        if not check_password(str(body.get("password", "")), password_hash):
+        if not credentials.verify(str(body.get("password", ""))):
             tries[ip] = recent + [now]
             return JSONResponse({"error": "Falsches Passwort."}, 401)
         tries[ip] = []
@@ -161,12 +161,54 @@ def build_gui(manager, settings, password_hash, audit_path=None, sessions=None):
         return JSONResponse({"entries": read_audit(audit_path, limit) if audit_path else []})
 
     async def session(request):
-        return JSONResponse({"authenticated": authed(request)})
+        return JSONResponse({"authenticated": authed(request),
+                             "needsSetup": credentials.needs_setup(),
+                             "setupOpen": credentials.setup_open()})
+
+    async def setup(request):
+        """Erstes Passwort setzen - nur mit dem Code aus dem Container-Log."""
+        ip = request.client.host if request.client else "?"
+        now = time.time()
+        recent = [t for t in tries.get(ip, []) if now - t < TRY_WINDOW]
+        if len(recent) >= MAX_TRIES:
+            return JSONResponse({"error": "Zu viele Fehlversuche. Bitte einige Minuten warten."}, 429)
+        if not same_origin(request):
+            return JSONResponse({"error": "Ungueltige Anfrage."}, 400)
+        try:
+            body = await request.json()
+        except Exception:
+            body = {}
+        ok, err = credentials.setup(str(body.get("code", "")), str(body.get("password", "")))
+        if not ok:
+            tries[ip] = recent + [now]
+            manager._audit("gui-setup", "-", "denied", err)
+            return JSONResponse({"error": err}, 400)
+        tries[ip] = []
+        manager._audit("gui-setup", "-", "ok", "Passwort gesetzt")
+        resp = JSONResponse({"ok": True})
+        resp.set_cookie(COOKIE, sessions.issue(), max_age=SESSION_SECONDS,
+                        httponly=True, samesite="strict", path="/")
+        return resp
+
+    async def change_password(request):
+        if not authed(request):
+            return JSONResponse({"error": "not-authenticated"}, 401)
+        if not same_origin(request):
+            return JSONResponse({"error": "Ungueltige Anfrage."}, 400)
+        try:
+            body = await request.json()
+        except Exception:
+            body = {}
+        ok, err = credentials.change(str(body.get("old", "")), str(body.get("new", "")))
+        manager._audit("gui-passwort", "-", "ok" if ok else "denied", "" if ok else err)
+        return JSONResponse({"ok": True} if ok else {"error": err}, 200 if ok else 400)
 
     return Starlette(routes=[
         Route("/", index),
         Route("/api/session", session),
         Route("/api/login", login, methods=["POST"]),
+        Route("/api/setup", setup, methods=["POST"]),
+        Route("/api/password", change_password, methods=["POST"]),
         Route("/api/logout", logout, methods=["POST"]),
         Route("/api/state", state),
         Route("/api/settings", save, methods=["POST"]),
@@ -227,7 +269,7 @@ PAGE = """<!doctype html>
   <button id="logout">Abmelden</button>
 </header>
 
-<main id="login">
+<main id="login" class="hide">
   <div class="card">
     <h2>Anmeldung</h2>
     <form id="loginform" class="row">
@@ -235,6 +277,23 @@ PAGE = """<!doctype html>
       <button class="primary" type="submit">Anmelden</button>
     </form>
     <p class="muted" id="loginerr"></p>
+  </div>
+</main>
+
+<main id="setup" class="hide">
+  <div class="card">
+    <h2>Erste Einrichtung</h2>
+    <p class="muted">Lege das Passwort für diese Oberfläche fest. Den <b>Einrichtungscode</b>
+      findest du im Log des Containers: in Unraid auf das Container-Symbol klicken und „Logs“
+      wählen, oder <code>docker logs hausmeister</code>. So kann nur jemand mit Zugriff auf den
+      Server das Passwort setzen, nicht der Assistent, der diesen Port ebenfalls erreicht.</p>
+    <form id="setupform">
+      <div class="row"><input type="text" id="code" placeholder="Einrichtungscode" required style="flex:1" autocomplete="off"></div>
+      <div class="row" style="margin-top:10px"><input type="password" id="np1" placeholder="Neues Passwort (mind. 10 Zeichen)" required style="flex:1" autocomplete="new-password"></div>
+      <div class="row" style="margin-top:10px"><input type="password" id="np2" placeholder="Wiederholen" required style="flex:1" autocomplete="new-password"></div>
+      <div class="row" style="margin-top:12px"><button class="primary" type="submit">Passwort festlegen</button></div>
+    </form>
+    <p class="muted" id="setuperr"></p>
   </div>
 </main>
 
@@ -262,6 +321,16 @@ PAGE = """<!doctype html>
   </div>
 
   <div class="card">
+    <h2>Passwort ändern</h2>
+    <form id="pwform" class="row">
+      <input type="password" id="oldpw" placeholder="Bisher" autocomplete="current-password" required>
+      <input type="password" id="newpw" placeholder="Neu (mind. 10 Zeichen)" autocomplete="new-password" required>
+      <button type="submit">Ändern</button>
+      <span class="muted" id="pwmsg"></span>
+    </form>
+  </div>
+
+  <div class="card">
     <h2>Hausbuch</h2>
     <p class="muted">Jede Schreibaktion und jeder abgelehnte Versuch, neueste zuerst.</p>
     <div class="wrap"><table class="log"><thead><tr><th>Zeit</th><th>Aktion</th><th>Container</th><th>Ergebnis</th><th>Detail</th></tr></thead>
@@ -278,8 +347,30 @@ function markDirty(){ dirty = true; $('#save').disabled = false; }
 
 async function boot(){
   const s = await (await api('/api/session')).json();
-  if (s.authenticated) { showApp(); } else { $('#login').classList.remove('hide'); $('#pw').focus(); }
+  if (s.authenticated) return showApp();
+  if (s.needsSetup) {
+    $('#setup').classList.remove('hide'); $('#code').focus();
+    if (!s.setupOpen) $('#setuperr').textContent =
+      'Das Zeitfenster für die Einrichtung ist abgelaufen. Container neu starten, dann steht ein neuer Code im Log.';
+  } else { $('#login').classList.remove('hide'); $('#pw').focus(); }
 }
+
+$('#setupform').addEventListener('submit', async e => {
+  e.preventDefault();
+  if ($('#np1').value !== $('#np2').value) { $('#setuperr').textContent = 'Die Passwörter stimmen nicht überein.'; return; }
+  const r = await api('/api/setup', {method:'POST', body: JSON.stringify({code: $('#code').value.trim(), password: $('#np1').value})});
+  const d = await r.json();
+  if (r.ok) { $('#setup').classList.add('hide'); showApp(); }
+  else $('#setuperr').textContent = d.error || 'Einrichtung fehlgeschlagen.';
+});
+
+$('#pwform').addEventListener('submit', async e => {
+  e.preventDefault();
+  const r = await api('/api/password', {method:'POST', body: JSON.stringify({old: $('#oldpw').value, new: $('#newpw').value})});
+  const d = await r.json();
+  $('#pwmsg').textContent = r.ok ? 'Passwort geändert.' : (d.error || 'Fehlgeschlagen.');
+  if (r.ok) { $('#oldpw').value = ''; $('#newpw').value = ''; }
+});
 
 $('#loginform').addEventListener('submit', async e => {
   e.preventDefault();

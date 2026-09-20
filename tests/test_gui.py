@@ -7,7 +7,9 @@ import httpx2
 
 from tests.fakes import FakeClient
 from tests.live import LiveServer
-from gui import build_gui, hash_password
+from auth import Credentials
+from gui import build_gui
+from hashpw import hash_password
 from manager import Manager, ToolError
 from settings import SettingsStore
 from server import build_app
@@ -26,7 +28,8 @@ class GuiTest(unittest.TestCase):
                                   seed={"whitelist": ["Jellyfin"]})
         cls.fake = FakeClient()
         cls.manager = Manager(cls.fake, cls.store, audit_path=cls.audit)
-        cls.gui = LiveServer(build_gui(cls.manager, cls.store, hash_password(PW), cls.audit)).start()
+        cls.creds = Credentials(os.path.join(cls.tmp.name, "auth.json"), env_hash=hash_password(PW))
+        cls.gui = LiveServer(build_gui(cls.manager, cls.store, cls.creds, cls.audit)).start()
         cls.mcp = LiveServer(build_app(cls.manager, TOKEN)).start()
 
     @classmethod
@@ -106,11 +109,66 @@ class GuiTest(unittest.TestCase):
             self.assertEqual(entries[0]["action"], "settings")
 
 
+class SetupFlowTest(unittest.TestCase):
+    """Erstes Passwort ueber die Oberflaeche - nur mit dem Code aus dem Log."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        store = SettingsStore(os.path.join(self.tmp.name, "s.json"))
+        self.creds = Credentials(os.path.join(self.tmp.name, "auth.json"), setup_code="ABCD1234")
+        self.srv = LiveServer(build_gui(Manager(FakeClient(), store), store, self.creds)).start()
+
+    def tearDown(self):
+        self.srv.stop(); self.tmp.cleanup()
+
+    def test_setup_flow(self):
+        with httpx2.Client(base_url=self.srv.base, timeout=10) as c:
+            s = c.get("/api/session").json()
+            self.assertTrue(s["needsSetup"])
+            self.assertTrue(s["setupOpen"])
+            # ohne Code kein Passwort
+            r = c.post("/api/setup", json={"code": "FALSCH", "password": PW}, headers=HDR)
+            self.assertEqual(r.status_code, 400)
+            self.assertTrue(self.creds.needs_setup())
+            # zu kurzes Passwort
+            self.assertEqual(c.post("/api/setup", json={"code": "ABCD1234", "password": "kurz"},
+                                    headers=HDR).status_code, 400)
+            # mit Code klappt es und man ist gleich angemeldet
+            self.assertEqual(c.post("/api/setup", json={"code": "ABCD1234", "password": PW},
+                                    headers=HDR).status_code, 200)
+            self.assertEqual(c.get("/api/state").status_code, 200)
+            self.assertFalse(c.get("/api/session").json()["needsSetup"])
+
+    def test_second_setup_is_refused(self):
+        with httpx2.Client(base_url=self.srv.base, timeout=10) as c:
+            c.post("/api/setup", json={"code": "ABCD1234", "password": PW}, headers=HDR)
+        with httpx2.Client(base_url=self.srv.base, timeout=10) as other:
+            r = other.post("/api/setup", json={"code": "ABCD1234", "password": "fremdes-passwort"},
+                           headers=HDR)
+            self.assertEqual(r.status_code, 400)
+            self.assertEqual(other.post("/api/login", json={"password": "fremdes-passwort"},
+                                        headers=HDR).status_code, 401)
+            self.assertEqual(other.post("/api/login", json={"password": PW}, headers=HDR).status_code, 200)
+
+    def test_password_change_over_http(self):
+        with httpx2.Client(base_url=self.srv.base, timeout=10) as c:
+            c.post("/api/setup", json={"code": "ABCD1234", "password": PW}, headers=HDR)
+            self.assertEqual(c.post("/api/password", json={"old": "falsch", "new": "neues-passwort-x"},
+                                    headers=HDR).status_code, 400)
+            self.assertEqual(c.post("/api/password", json={"old": PW, "new": "neues-passwort-x"},
+                                    headers=HDR).status_code, 200)
+            c.post("/api/logout", headers=HDR)
+            self.assertEqual(c.post("/api/login", json={"password": PW}, headers=HDR).status_code, 401)
+            self.assertEqual(c.post("/api/login", json={"password": "neues-passwort-x"},
+                                    headers=HDR).status_code, 200)
+
+
 class RateLimitTest(unittest.TestCase):
     def test_too_many_wrong_passwords(self):
         tmp = tempfile.TemporaryDirectory()
         store = SettingsStore(os.path.join(tmp.name, "s.json"))
-        srv = LiveServer(build_gui(Manager(FakeClient(), store), store, hash_password(PW))).start()
+        creds = Credentials(os.path.join(tmp.name, "auth.json"), env_hash=hash_password(PW))
+        srv = LiveServer(build_gui(Manager(FakeClient(), store), store, creds)).start()
         try:
             with httpx2.Client(base_url=srv.base, timeout=10) as c:
                 codes = [c.post("/api/login", json={"password": "x"}, headers=HDR).status_code

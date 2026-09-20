@@ -7,7 +7,11 @@ Konfiguration ueber Umgebungsvariablen (Secrets) plus config.json (Startwerte):
   UNRAID_URL          z. B. https://<unraid-ip>:<port>/graphql
   UNRAID_API_KEY      eigener Key: DOCKER READ_ANY+UPDATE_ANY, INFO READ_ANY, ARRAY READ_ANY
   MCP_TOKEN           >= 32 Zeichen, das einzige, was der Assistent kennt
-  GUI_PASSWORD_HASH   scrypt-Hash aus `python hashpw.py`; fehlt er, bleibt die GUI aus
+  GUI_PASSWORD_HASH   optional: Hash fest vorgeben (`python3 hashpw.py`). Ohne diese
+                      Variable setzt der Besitzer das Passwort beim ersten Aufruf der
+                      Oberflaeche - mit dem Einrichtungscode, der beim Start im Log steht.
+  GUI_AUTH_FILE       Default /data/auth.json
+  GUI_DISABLED        auf 1 setzen, wenn die Oberflaeche ganz aus bleiben soll
   MCP_ALLOWED_HOSTS   z. B. <unraid-ip>:8765 (Host-Header-Pruefung), optional
   MCP_CONFIG          Startwerte, Default /config/config.json
   MCP_SETTINGS        aenderbare Einstellungen, Default /data/settings.json
@@ -18,6 +22,7 @@ import asyncio
 import hmac
 import json
 import os
+import secrets
 import sys
 
 import anyio
@@ -25,6 +30,7 @@ from mcp.server.mcpserver import MCPServer
 from mcp.server.transport_security import TransportSecuritySettings
 from mcp.types import ToolAnnotations
 
+from auth import Credentials
 from gui import build_gui
 from manager import Manager
 from settings import SettingsStore
@@ -133,6 +139,20 @@ def load_seed(env=os.environ):
         return {}
 
 
+def banner(code, port):
+    """Einrichtungscode gut sichtbar ins Container-Log. Nur wer das Log sieht,
+    darf das erste Passwort setzen - der Assistent kommt hier nicht heran."""
+    line = "=" * 64
+    print("\n".join(["", line,
+                     " Hausmeister: es ist noch kein Passwort gesetzt.",
+                     " Oeffne http://<server>:%d und gib diesen Einrichtungscode ein:" % port,
+                     "",
+                     "     EINRICHTUNGSCODE: %s" % code,
+                     "",
+                     " Gueltig fuer 30 Minuten. Danach Container neu starten,",
+                     " dann steht hier ein neuer Code.", line, ""]), flush=True)
+
+
 async def serve(apps):
     """Mehrere ASGI-Apps auf eigenen Ports im selben Prozess."""
     import uvicorn
@@ -153,12 +173,16 @@ def main():
     hosts = [h.strip() for h in env.get("MCP_ALLOWED_HOSTS", "").split(",") if h.strip()]
 
     apps = [(build_app(manager, env["MCP_TOKEN"], hosts), int(env.get("MCP_PORT", "8765")))]
-    pw_hash = env.get("GUI_PASSWORD_HASH", "").strip()
-    if pw_hash:
-        apps.append((build_gui(manager, store, pw_hash, audit_path), int(env.get("GUI_PORT", "8766"))))
+    if env.get("GUI_DISABLED", "").strip() in ("1", "true", "yes"):
+        print("GUI_DISABLED gesetzt - die Weboberflaeche bleibt aus.", flush=True)
     else:
-        print("GUI_PASSWORD_HASH fehlt - die Weboberflaeche bleibt aus. "
-              "Rechte kommen dann nur aus settings.json bzw. config.json.", flush=True)
+        gui_port = int(env.get("GUI_PORT", "8766"))
+        creds = Credentials(env.get("GUI_AUTH_FILE", "/data/auth.json"),
+                            env_hash=env.get("GUI_PASSWORD_HASH"),
+                            setup_code=secrets.token_hex(4).upper())
+        if creds.needs_setup():
+            banner(creds.setup_code, gui_port)
+        apps.append((build_gui(manager, store, creds, audit_path), gui_port))
     asyncio.run(serve(apps))
 
 

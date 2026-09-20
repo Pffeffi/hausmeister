@@ -43,11 +43,23 @@ Die Rechte ändert der Besitzer im Browser, nicht der Assistent:
 
 Änderungen wirken sofort, ohne Neustart (`/data/settings.json`, wird bei Änderung neu gelesen).
 
-**Getrennt vom Assistenten:** eigener Port, eigene Anmeldung mit Passwort (scrypt-Hash in
-`GUI_PASSWORD_HASH`), Sitzung als signiertes Cookie (SameSite=Strict), CSRF-Header- und
-Origin-Prüfung, fünf Fehlversuche je IP pro fünf Minuten. **Das MCP-Token gilt hier nicht**, und
-die Sitzung der Oberfläche öffnet umgekehrt nicht den MCP-Port. Sonst könnte sich der Assistent
-selbst mehr Rechte geben. Das Passwort gehört deshalb nicht auf den Rechner des Assistenten.
+### Erste Einrichtung
+Beim ersten Start gibt es noch kein Passwort. Der Container schreibt dann einen
+**Einrichtungscode** in sein Log (in Unraid: Container-Symbol → Logs, oder
+`docker logs hausmeister`). Wer die Oberfläche öffnet, setzt damit das Passwort.
+
+Der Code ist wichtig: Ohne ihn könnte der Assistent, der denselben Port erreicht, einfach
+zuerst da sein und sich selbst die Oberfläche einrichten. An das Container-Log kommt nur, wer
+Zugriff auf den Server hat. Das Fenster schließt nach 30 Minuten; danach erzeugt ein Neustart
+einen neuen Code. Wer lieber ohne Code arbeitet, setzt `GUI_PASSWORD_HASH` (aus
+`python3 hashpw.py`) – dann entfällt die Einrichtung. Das Passwort selbst lässt sich später in
+der Oberfläche ändern.
+
+**Getrennt vom Assistenten:** eigener Port, eigene Anmeldung, Sitzung als signiertes Cookie
+(SameSite=Strict), CSRF-Header- und Origin-Prüfung, fünf Fehlversuche je IP pro fünf Minuten.
+**Das MCP-Token gilt hier nicht**, und die Sitzung der Oberfläche öffnet umgekehrt nicht den
+MCP-Port. Sonst könnte sich der Assistent selbst mehr Rechte geben. Das Passwort gehört deshalb
+nicht auf den Rechner des Assistenten.
 
 ## Warum die Grenze hier liegt und nicht beim API-Key
 
@@ -73,15 +85,14 @@ Weitere Schutzmaßnahmen:
    unraid-api apikey --create --name "Hausmeister" --roles "" \
      --permissions "DOCKER:READ_ANY,DOCKER:UPDATE_ANY,INFO:READ_ANY,ARRAY:READ_ANY" --json
    ```
-2. Passwort für die Oberfläche festlegen: `python hashpw.py` und die ausgegebene Zeile
-   in die `.env` übernehmen. Ohne `GUI_PASSWORD_HASH` startet nur der MCP-Teil.
-3. Projekt auf den Server kopieren. Daneben aus den Vorlagen anlegen:
-   - `.env` (aus `.env.example`: IP, Key, Token, Passwort-Hash)
+2. Projekt auf den Server kopieren. Daneben aus den Vorlagen anlegen:
+   - `.env` (aus `.env.example`: IP, Key, Token)
    - `config.json` (aus `config.example.json`: Startwerte der Freigaben; danach zählt
      `/data/settings.json` aus der Oberfläche)
-4. Stack starten, z. B. in Compose.Manager mit **Compose Up** oder `docker compose up -d --build`.
+3. Stack starten, z. B. in Compose.Manager mit **Compose Up** oder `docker compose up -d --build`.
+4. Ins **Container-Log** schauen, den Einrichtungscode kopieren, `http://<unraid-ip>:8766`
+   öffnen und das Passwort setzen.
 5. Prüfen: `curl -X POST http://<unraid-ip>:8765/mcp` muss **401** liefern.
-   Oberfläche: `http://<unraid-ip>:8766` im Browser.
 
 ### Absichern (wichtig)
 Wenn der Client-Rechner den Deploy-Ordner per SMB erreicht (z. B. ein Share), könnte der Assistent
@@ -126,6 +137,8 @@ python -m unittest discover -s tests -t .
 `tests/test_server.py` testet über echtes HTTP mit dem offiziellen MCP-Client (401 ohne Token,
 Host-Header-Prüfung, genau die erlaubten Tools), `tests/test_gui.py` die Oberfläche inklusive der
 Trennung beider Zugänge: MCP-Token öffnet die GUI nicht, GUI-Sitzung öffnet den MCP-Port nicht.
+`tests/test_auth.py` deckt die Einrichtung ab: falscher Code, abgelaufenes Fenster, kein zweites
+Setup, Passwortwechsel.
 Gebaut auf `mcp` 2.x (`MCPServer`), getestet gegen Unraid 7.3.2 / API 4.35.1.
 
 ## Lizenz
