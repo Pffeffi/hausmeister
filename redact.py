@@ -8,6 +8,10 @@ import re
 
 MASK = "[REDACTED]"
 
+# Farb- und Steuersequenzen (z. B. von Go-Programmen wie Stash) rausnehmen -
+# im Chat sind sie nur Rauschen.
+_ANSI = re.compile("\x1b\\[[0-9;?]*[A-Za-z]|\x1b\\][^\x07]*\x07|[\x00-\x08\x0b-\x1f\x7f]")
+
 _KEYS = (r"pass(?:word|wd)?|pwd|secret|token|api[_-]?key|apikey|access[_-]?key|"
          r"client[_-]?secret|auth(?:orization)?|session(?:id)?|cookie|private[_-]?key|credential")
 
@@ -32,6 +36,7 @@ _PATTERNS = [
 
 
 def redact(text):
+    text = _ANSI.sub("", text)
     for pat, repl in _PATTERNS:
         text = pat.sub(repl, text)
     return text

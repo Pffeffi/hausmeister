@@ -24,6 +24,10 @@ class RedactTest(unittest.TestCase):
         self.check("connect postgres://app:pw1234@db:5432/x", "pw1234")
         self.check("key 0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef", "0123456789abcdef")
 
+    def test_ansi_sequences_are_removed(self):
+        roh = "[90m2026-09-17T08:02:37+02:00[0m [32mINF[0m Response: 200 OK"
+        self.assertEqual(redact(roh), "2026-09-17T08:02:37+02:00 INF Response: 200 OK")
+
     def test_harmless_lines_untouched(self):
         line = "[INF] Jellyfin started on port 8096 in 1234 ms"
         self.assertEqual(redact(line), line)
