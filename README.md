@@ -149,9 +149,14 @@ Zwei Wege:
    sobald die API nichts liefert — dort stehen **beide** Ströme; Zeilen aus stderr sind mit `!`
    markiert. Ohne Mount ändert sich nichts.
 
+   Dafür braucht der Container `user: "10001:0"`: Docker legt die Logordner als `root:root` mit
+   `drwx--x---` / `-rw-r-----` an, die **Gruppe** darf also lesen. Der Benutzer bleibt
+   unprivilegiert, es läuft nichts als root.
+
    Abwägung: Der Prozess kann damit die Rohlogs **aller** Container lesen, gefiltert wird nur noch
    im Code (`docker_logs.py`: ausschließlich `<64-hex-id>/<id>-json.log`, nur letzte Bytes, keine
-   anderen Dateien). Kein Socket, kein Schreibrecht. Wer das nicht will, lässt Mount und Variable weg.
+   anderen Dateien). Kein Socket, kein Schreibrecht. Wer das nicht will, lässt Mount, Variable und
+   die `user`-Zeile weg.
 
 ## Netz
 Der Port ist nur an die LAN-IP gebunden. **Keinen** Reverse-Proxy-Eintrag, keine
