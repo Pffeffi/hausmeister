@@ -177,5 +177,10 @@ Setup, Passwortwechsel), `tests/test_docker_logs.py` die Reserve-Logquelle inklu
 Pfad-Ausbruchsversuchen.
 Gebaut auf `mcp` 2.x (`MCPServer`), getestet gegen Unraid 7.3.2 / API 4.35.1.
 
+## Entstehung
+Dieses Projekt wurde mit **[Claude Code](https://claude.com/claude-code)** (Anthropic) gebaut —
+von der Recherche in der Unraid-API über Code und Tests bis zur Oberfläche. Entwurf, Entscheidungen
+und jeder Schritt auf dem Server liefen über den Besitzer des Homelabs, in dem es läuft.
+
 ## Lizenz
 MIT
